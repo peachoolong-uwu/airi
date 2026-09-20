@@ -42,6 +42,8 @@ interface CreateAliyunNlsStreamResponseOptions {
   audioStream: ReadableStream<Uint8Array>
   credentials: AliyunNlsCredentials
   createToken?: (credentials: AliyunNlsCredentials) => Promise<AliyunNlsToken>
+  emitHops?: boolean
+  readyElapsedMs?: number
   sessionOptions?: AliyunNlsStartPayload
   websocketBaseURL?: string
 }
@@ -129,6 +131,26 @@ function sse(payload: { delta: string, type: 'transcript.text.delta' | 'transcri
   return encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
 }
 
+function sseHop(name: string, data: Record<string, unknown>): Uint8Array {
+  return encoder.encode(`data: ${JSON.stringify({ type: 'airi.debug.hop', name, ...data })}\n\n`)
+}
+
+function emitHop(
+  controller: ReadableStreamDefaultController<Uint8Array> | undefined,
+  emitHops: boolean,
+  name: string,
+  data: Record<string, unknown>,
+) {
+  if (!emitHops || !controller)
+    return
+  try {
+    controller.enqueue(sseHop(name, data))
+  }
+  catch {
+    // The client may already have closed the SSE body.
+  }
+}
+
 function createClientEvent(credentials: AliyunNlsCredentials, name: 'StartTranscription' | 'StopTranscription', sessionId: string, payload?: AliyunNlsStartPayload) {
   return JSON.stringify({
     header: {
@@ -142,19 +164,38 @@ function createClientEvent(credentials: AliyunNlsCredentials, name: 'StartTransc
   })
 }
 
-async function writeAudioToUpstream(audioStream: ReadableStream<Uint8Array>, ws: WebSocket, credentials: AliyunNlsCredentials, sessionId: string) {
+async function writeAudioToUpstream(
+  audioStream: ReadableStream<Uint8Array>,
+  ws: WebSocket,
+  credentials: AliyunNlsCredentials,
+  sessionId: string,
+  t0: number,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  emitHops: boolean,
+) {
   const reader = audioStream.getReader()
+  let chunks = 0
+  let bytes = 0
+  let firstChunkElapsedMs: number | null = null
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done)
         break
-      if (value)
+      if (value) {
+        if (chunks === 0) {
+          firstChunkElapsedMs = Date.now() - t0
+          emitHop(controller, emitHops, 'nls_audio_first_chunk', { elapsedMs: firstChunkElapsedMs, byteLength: value.byteLength })
+        }
+        chunks++
+        bytes += value.byteLength
         ws.send(value, { binary: true })
+      }
     }
   }
   finally {
     ws.send(createClientEvent(credentials, 'StopTranscription', sessionId))
+    emitHop(controller, emitHops, 'nls_audio_stop', { elapsedMs: Date.now() - t0, chunks, bytes, firstChunkElapsedMs })
   }
 }
 
@@ -172,25 +213,43 @@ async function writeAudioToUpstream(audioStream: ReadableStream<Uint8Array>, ws:
  * - A `text/event-stream` response consumable by the shared `streamTranscription` adapter.
  */
 export function createAliyunNlsStreamResponse(options: CreateAliyunNlsStreamResponseOptions): Response {
+  const emitHops = options.emitHops === true
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const t0 = Date.now()
+      if (options.readyElapsedMs != null)
+        emitHop(controller, emitHops, 'asr_stream_ready', { elapsedMs: options.readyElapsedMs, region: options.credentials.region })
       const createToken = options.createToken ?? createAliyunNlsToken
       const token = await createToken(options.credentials)
+      emitHop(controller, emitHops, 'nls_token_created', { elapsedMs: Date.now() - t0, region: options.credentials.region })
       const sessionId = randomUUID().replaceAll('-', '')
       const upstreamURL = new URL(options.websocketBaseURL ?? nlsWebSocketEndpointFromRegion(options.credentials.region))
       upstreamURL.searchParams.set('token', token.token)
 
       const ws = new WebSocket(upstreamURL)
+      let loggedIntermediate = false
 
       ws.on('open', () => {
+        emitHop(controller, emitHops, 'nls_ws_open', { elapsedMs: Date.now() - t0, region: options.credentials.region })
         ws.send(createClientEvent(options.credentials, 'StartTranscription', sessionId, merge(DEFAULT_SESSION_OPTIONS, options.sessionOptions)))
       })
 
       ws.on('message', (data) => {
         const event = JSON.parse(data.toString()) as AliyunNlsServerEvent
-        switch (event.header?.name) {
+        const eventName = event.header?.name
+        const hopData = { elapsedMs: Date.now() - t0, eventName, hasResult: typeof event.payload?.result === 'string', resultLen: event.payload?.result?.length ?? 0 }
+        if (eventName === 'TranscriptionResultChanged') {
+          if (!loggedIntermediate) {
+            loggedIntermediate = true
+            emitHop(controller, emitHops, 'nls_event', hopData)
+          }
+        }
+        else {
+          emitHop(controller, emitHops, 'nls_event', hopData)
+        }
+        switch (eventName) {
           case 'TranscriptionStarted':
-            void writeAudioToUpstream(options.audioStream, ws, options.credentials, sessionId)
+            void writeAudioToUpstream(options.audioStream, ws, options.credentials, sessionId, t0, controller, emitHops)
             break
           case 'SentenceEnd': {
             const text = event.payload?.result ? `${event.payload.result}\n` : ''
@@ -207,6 +266,7 @@ export function createAliyunNlsStreamResponse(options: CreateAliyunNlsStreamResp
       })
 
       ws.on('error', (error) => {
+        emitHop(controller, emitHops, 'nls_ws_error', { elapsedMs: Date.now() - t0, message: error instanceof Error ? error.message : String(error) })
         controller.error(error)
       })
 

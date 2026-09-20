@@ -7,6 +7,7 @@ import type { RouterConfig } from '../../services/domain/llm-router/types'
 import type { ProviderCatalogService } from '../../services/domain/provider-catalog'
 import type { EnvelopeCrypto } from '../../utils/envelope-crypto'
 
+import { isAsrDebugHopsEnabled } from '../../libs/env'
 import { resolveRequestAuth } from '../../libs/request-auth'
 import { createKeyRotator } from '../../services/domain/llm-router/key-rotator'
 import { createServiceUnavailableError, createUnauthorizedError } from '../../utils/error'
@@ -124,6 +125,7 @@ export function createAudioTranscriptionStreamHandler(input: {
   providerCatalogService: ProviderCatalogService
 }) {
   return async function handleAudioTranscriptionStream(c: Context) {
+    const t0 = Date.now()
     const session = await resolveRequestAuth(
       input.db,
       input.env,
@@ -143,6 +145,8 @@ export function createAudioTranscriptionStreamHandler(input: {
     return createAliyunNlsStreamResponse({
       audioStream: audioStream as ReadableStream<Uint8Array>,
       credentials,
+      emitHops: isAsrDebugHopsEnabled(input.env.ASR_DEBUG_HOPS),
+      readyElapsedMs: Date.now() - t0,
     })
   }
 }

@@ -121,6 +121,7 @@ describe('createAliyunNlsStreamResponse', () => {
 
     expect(body).toContain('data: {"delta":"hello airi\\n","type":"transcript.text.delta"}')
     expect(body).toContain('data: {"delta":"","type":"transcript.text.done"}')
+    expect(body).not.toContain('airi.debug.hop')
     expect(upstream.receivedBinaryFrames).toEqual([
       Buffer.from([1, 2]),
       Buffer.from([3, 4]),
@@ -138,5 +139,32 @@ describe('createAliyunNlsStreamResponse', () => {
 
     const stopFrame = JSON.parse(upstream.receivedTextFrames.at(-1)!) as { header: { name: string } }
     expect(stopFrame.header.name).toBe('StopTranscription')
+  })
+
+  it('emits airi.debug.hop SSE events when emitHops is true', async () => {
+    upstream = await startMockAliyunUpstream()
+
+    const response = createAliyunNlsStreamResponse({
+      audioStream: streamOf([Buffer.from([1, 2])]),
+      credentials: {
+        accessKeyId: 'ak',
+        accessKeySecret: 'secret',
+        appKey: 'app',
+        region: 'cn-shanghai',
+      },
+      createToken: async () => ({ token: 'mock-token', expiresAt: Date.now() + 3600_000 }),
+      emitHops: true,
+      readyElapsedMs: 12,
+      websocketBaseURL: upstream.url,
+    })
+
+    const body = await readText(response.body!)
+    const hopNames = [...body.matchAll(/"type":"airi.debug.hop"[^}]*"name":"([^"]+)"/g)].map(match => match[1])
+
+    expect(hopNames).toContain('asr_stream_ready')
+    expect(hopNames).toContain('nls_token_created')
+    expect(hopNames).toContain('nls_ws_open')
+    expect(hopNames).toContain('nls_event')
+    expect(body).toContain('data: {"delta":"hello airi\\n","type":"transcript.text.delta"}')
   })
 })

@@ -72,6 +72,12 @@ const EnvSchema = object({
   ),
   API_SERVER_URL: optional(string(), 'http://localhost:3000'),
 
+  // When set to 1/true/on/yes, official ASR SSE includes `airi.debug.hop`
+  // timing events. Keep unset in production. DEV Railway uses this so a local
+  // browser can record Singapore → Shanghai hops without the API posting to
+  // the developer's localhost ingest.
+  ASR_DEBUG_HOPS: optional(string(), ''),
+
   // Apple In-App Purchase (StoreKit 2). Empty or unset keeps the routes
   // mounted and returns 503 APPLE_IAP_DISABLED.
   APPLE_IAP_APPS: optional(AppleIapAppsSchema, ''),
@@ -151,6 +157,13 @@ const EnvSchema = object({
 })
 
 export type Env = InferOutput<typeof EnvSchema>
+
+/**
+ * Returns true when official ASR should emit `airi.debug.hop` SSE events.
+ */
+export function isAsrDebugHopsEnabled(value: string): boolean {
+  return ['1', 'true', 'on', 'yes'].includes(value.trim().toLowerCase())
+}
 
 export function parseEnv(inputEnv: Record<string, string> | typeof env): Env {
   try {

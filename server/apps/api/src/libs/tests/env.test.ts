@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 
 import { describe, expect, it } from 'vitest'
 
-import { parseEnv } from '../env'
+import { isAsrDebugHopsEnabled, parseEnv } from '../env'
 
 function baseEnv(): Record<string, string> {
   return {
@@ -109,5 +109,31 @@ describe('parseEnv', () => {
       { bundleId: 'ai.moeru.airi-pocket' },
       { bundleId: 'ai.moeru.airi-lite', appAppleId: 123456 },
     ])
+  })
+
+  it('defaults ASR_DEBUG_HOPS to an empty string', () => {
+    expect(parseEnv(baseEnv()).ASR_DEBUG_HOPS).toBe('')
+  })
+
+  it('parses ASR_DEBUG_HOPS when set', () => {
+    expect(parseEnv({
+      ...baseEnv(),
+      ASR_DEBUG_HOPS: '1',
+    }).ASR_DEBUG_HOPS).toBe('1')
+  })
+})
+
+describe('isAsrDebugHopsEnabled', () => {
+  it('treats 1, true, on, and yes as enabled', () => {
+    expect(isAsrDebugHopsEnabled('1')).toBe(true)
+    expect(isAsrDebugHopsEnabled('TRUE')).toBe(true)
+    expect(isAsrDebugHopsEnabled('on')).toBe(true)
+    expect(isAsrDebugHopsEnabled(' yes ')).toBe(true)
+  })
+
+  it('treats empty and other values as disabled', () => {
+    expect(isAsrDebugHopsEnabled('')).toBe(false)
+    expect(isAsrDebugHopsEnabled('0')).toBe(false)
+    expect(isAsrDebugHopsEnabled('false')).toBe(false)
   })
 })
